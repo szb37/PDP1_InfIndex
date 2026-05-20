@@ -19,7 +19,7 @@ import os
 class DataWrangl():
     
     @staticmethod
-    def get_df_master(dir_in=folders.fromParker, csvs=config.parkers_csvs, filter=False, save=False, exclude_pids=None):
+    def get_df_master(dir_in=folders.fromParker, csvs=config.parkers_csvs, filter=False, save=False, exclude_pids=None, transform='log'):
         """Build the master long-form dataframe of biomarkers and outcomes.
 
         Merges Parker CSVs, cleans values, computes log-transforms and deltas,
@@ -38,6 +38,11 @@ class DataWrangl():
                 - Sensitivity analyses (e.g., excluding outliers)
                 - Leave-one-out robustness checks
                 If None (default), no patients are excluded.
+            transform (str): Transformation applied to raw values. One of:
+                - 'log' (default): natural log of (value + 1) via np.log1p
+                - 'boxcox': Box-Cox transform via scipy.stats.boxcox, fit per
+                  measure on (value + 1) to handle zeros.
+                Output column is always named 'log_value' regardless of choice.
 
         Returns:
             df (pd.DataFrame): master long-form dataframe of biomarkers and outcomes
@@ -77,8 +82,19 @@ class DataWrangl():
             (df.tp.isin(config.tps))]
         df.reset_index(drop=True, inplace=True)
 
-        ### Add log-transformed scores
-        df['log_value'] = np.log1p(df['value'])
+        ### Add transformed scores (always stored in 'log_value' column regardless of transform type)
+        assert transform in ['log', 'boxcox'], f"transform must be 'log' or 'boxcox', got '{transform}'"
+        if transform == 'log':
+            df['log_value'] = np.log1p(df['value'])
+        elif transform == 'boxcox':
+            # Box-Cox requires strictly positive values; shift by 1 to match log1p behavior
+            # Fit lambda separately per measure since markers have different distributions
+            df['log_value'] = math.nan
+            for measure in df['measure'].unique():
+                mask = df['measure'] == measure
+                vals = df.loc[mask, 'value'] + 1
+                transformed, _ = stats.boxcox(vals)
+                df.loc[mask, 'log_value'] = transformed
 
         ### This patient at this tp has extremly high CRP value, hence 
         ridx_rm = df.loc[(df.tp=='A1') & (df.pID==1034)].index
