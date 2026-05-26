@@ -32,7 +32,7 @@ tp_to_ndays={ # Based form the PDP1 paper, average number of days between tps
 markers_mitokines = ['FGF-21', 'GDF-15']
 
 markers_infind_comps = ['IL-6', 'IL-8', 'TNF-alpha', 'CRP', 'IFN-gamma',]
-markers_inflamation_miscs = ['IL-10', 'sIL-6R',]
+markers_inflamation_miscs = ['IL-10',]
 markers_inflamation = ['infindex'] + markers_infind_comps + markers_inflamation_miscs
 
 markers_explorat1 = ['IL-7', 'IL-12', 'IL-15', 'IL-16','IL-27', 'TSLP', 'IL-1RA',]
@@ -41,7 +41,7 @@ markers_explorat3 = ['VEGF', 'VEGF-C', 'VEGF-D', 'PlGF', 'bFGF','TIE-2', 'FLT-1'
 
 markers_explorat = markers_explorat1 + markers_explorat2 + markers_explorat3
 markers_main = markers_inflamation + markers_mitokines 
-markers = markers_main + markers_explorat
+markers = markers_main + markers_explorat + ['mitoindex']
 
 heatmap_groups = {
     'infindex': ['infindex'],

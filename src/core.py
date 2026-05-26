@@ -84,6 +84,7 @@ class DataWrangl():
 
         ### Add transformed scores (always stored in 'log_value' column regardless of transform type)
         assert transform in ['log', 'boxcox'], f"transform must be 'log' or 'boxcox', got '{transform}'"
+        
         if transform == 'log':
             df['log_value'] = np.log1p(df['value'])
         elif transform == 'boxcox':
@@ -117,14 +118,8 @@ class DataWrangl():
             df.reset_index(drop=True, inplace=True)    
             
         ### Add inflammation index
-        df = DataWrangl.add_infindex(df)        
-
-        ### Grab and merge PDP1 data
-        df_pdp1 = pd.read_csv(os.path.join(folders.data, 'pdp1_master.csv'))
-        df_pdp1 = df_pdp1.loc[(df_pdp1['measure']=='MADRS')]
-        df_pdp1['trial'] = 'PDP1'
-        df_pdp1['type'] = 'outcome'
-        del df_pdp1['test']
+        df = DataWrangl.add_composite_index(df, comps=config.markers_infind_comps, measure_type='inflammation', measure_name='infindex') 
+        df = DataWrangl.add_composite_index(df, comps=config.markers_mitokines, measure_type='mitokines', measure_name='mitoindex') 
 
         ### Add delta scores 
         #  add_delta_scores() acts on the 'score' column and adds a 'delta_score' column, hence some temporary renaming
@@ -145,7 +140,10 @@ class DataWrangl():
 
         ### Add number of days based on the timepoints
         for tp in config.tps:
-            df.loc[(df.tp==tp), 'ndays'] = config.tp_to_ndays[tp]                 
+            df.loc[(df.tp==tp), 'ndays'] = config.tp_to_ndays[tp]            
+
+        ### Remove sIL-6R data as it is uninterpretable - decision approved by first auth Ellen Bradley 
+        df = df.loc[df.measure!='sIL-6R']
 
         ### Organize and save results
         df['value'] = round(df['value'], 4)
@@ -171,22 +169,17 @@ class DataWrangl():
             df.to_csv(os.path.join(save['dir_out'], save['fname_out']), index=False)
 
         return df
-
+        
     @staticmethod
-    def add_infindex(df_master):
-        """Append to df_master the inflammation index, which is the average of z-scores across selected markers.
+    def add_composite_index(df_master, comps=config.markers_infind_comps, measure_type='inflammation', measure_name='infindex'):
+        """Append to df_master the composite indexscores, which is the average of z-scores across selected markers.
 
-        The inflammation index is a composite score computed from 5 core inflammatory markers:
-        IL-6, IL-8, TNF-alpha, CRP, and IFN-gamma (defined in config.markers_infind_comps).
+        The mitochondria index is a composite score computed from defined markers.
 
         Computation:
             1. For each marker, z-score the log-transformed concentrations across all patients/timepoints
                (standardizes each marker to mean=0, std=1 so they're on comparable scales)
-            2. For each patient/timepoint, average the 5 z-scores to get a single inflammation index
-
-        Interpretation:
-            - Higher infindex = higher inflammation (patient above average on these markers)
-            - Lower/negative infindex = lower inflammation (patient below average)
+            2. For each patient/timepoint, average the z-scores to get a single composite index
 
         Args:
             df_master (pd.DataFrame): Long-form dataframe with columns including
@@ -197,14 +190,14 @@ class DataWrangl():
             appended for each patient/timepoint where computable.
         """
 
-        # Filter to only the 5 core inflammatory markers used in the index
+        # Filter to markers used in the index
         df_infind = df_master.copy()
-        df_infind = df_infind.loc[(df_infind.measure.isin(config.markers_infind_comps))]
+        df_infind = df_infind.loc[(df_infind.measure.isin(comps))]
         df_infind['z_log_value'] = math.nan
 
         # Step 1: Z-score each marker's log-concentrations across all observations
         # This standardizes each marker (mean=0, std=1) so they contribute equally to the index
-        for measure in config.markers_infind_comps:
+        for measure in comps:
             df_infind.loc[(df_infind.measure==measure), 'z_log_value'] = stats.zscore(
                 df_infind.loc[(df_infind.measure==measure), 'log_value'], nan_policy='omit')
 
@@ -217,24 +210,28 @@ class DataWrangl():
         df_infind.columns = [col[1] if col[0] == 'z_log_value' else col[0] for col in df_infind.columns]
 
         # Flag patient-timepoints with incomplete marker data (will be excluded from index)
-        incomplete = df_infind[df_infind[config.markers_infind_comps].isna().any(axis=1)]
+        incomplete = df_infind[df_infind[comps].isna().any(axis=1)]
         if len(incomplete) > 0:
             print(f"Warning: {len(incomplete)} patient-timepoint(s) excluded from infindex due to missing markers:")
             for _, row in incomplete.iterrows():
-                missing = [m for m in config.markers_infind_comps if pd.isna(row[m])]
+                missing = [m for m in comps if pd.isna(row[m])]
                 print(f"  pID {int(row['pID'])}, tp {row['tp']}: missing {missing}")
 
-        # Step 2: Calculate inflammation index as the mean of the 5 z-scored markers
-        # Drop rows where any marker is missing (require all 5 components)
-        df_infind.dropna(subset=config.markers_infind_comps, inplace=True)
-        df_infind['infindex'] = df_infind[config.markers_infind_comps].mean(axis=1)
+        # GDF-15 lower is better, so change score signs will be flipped, so higher is better.
+        if 'GDF-15' in comps:
+            df_infind['GDF-15'] = -df_infind['GDF-15']
+
+        # Step 2: Calculate inflammation index as the mean of the z-scored markers
+        # Drop rows where any marker is missing
+        df_infind.dropna(subset=comps, inplace=True)
+        df_infind[measure_name] = df_infind[comps].mean(axis=1)
 
         # Format as long-form row to match df_master structure
-        df_infind = df_infind[['pID', 'tp', 'infindex']]
+        df_infind = df_infind[['pID', 'tp', measure_name]]
         df_infind['trial'] = 'PDP1'
-        df_infind['type'] = 'inflammation'
-        df_infind['measure'] = 'infindex'
-        df_infind = df_infind.rename(columns={'infindex': 'log_value'})
+        df_infind['type'] = measure_type
+        df_infind['measure'] = measure_name
+        df_infind = df_infind.rename(columns={measure_name: 'log_value'})
 
         # Append infindex rows to the master dataframe
         df_master = pd.concat([df_master, df_infind])
@@ -401,8 +398,6 @@ class Plots():
             ax.set_xlabel('', fontdict=config.axislabel_fontdict)
 
             # Format measure name with Greek letters
-            measure_formatted = measure.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
-
             if outcome in ['log_value', 'delta_log_value']:
                 ax.set_ylabel(f'ln(1+[{measure_formatted}])', fontdict=config.axislabel_fontdict)
             elif outcome=='infindex':
@@ -520,8 +515,6 @@ class Plots():
             ax.set_xlabel('', fontdict=config.axislabel_fontdict)
 
             # Format measure name with Greek letters
-            measure_formatted = measure.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
-
             if outcome in ['log_value', 'delta_log_value']:
                 ax.set_ylabel(f'ln(1+[{measure_formatted}])', fontdict=config.axislabel_fontdict)
             elif outcome=='infindex':
@@ -671,8 +664,6 @@ class Plots():
             ax.set_xlabel('', fontdict=config.axislabel_fontdict)
 
             # Format measure name with Greek letters
-            measure_formatted = measure.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
-
             if outcome in ['log_value', 'delta_log_value']:
                 ax.set_ylabel(f'ln(1+[{measure_formatted}])', fontdict=config.axislabel_fontdict)
             elif outcome == 'infindex':
@@ -729,7 +720,7 @@ class Plots():
         df_me_all = pd.concat([pd.read_csv(f) for f in me_files.values()])
 
         # Reverse Greek letters in measure names to match with config.markers
-        df_me_all['measure'] = df_me_all['measure'].str.replace('TNF-α', 'TNF-alpha').str.replace('IFN-γ', 'IFN-gamma')
+        # df_me_all['measure'] = df_me_all['measure'].str.replace('TNF-α', 'TNF-alpha').str.replace('IFN-γ', 'IFN-gamma')
 
         for measure in config.markers:
 
@@ -814,7 +805,7 @@ class Plots():
             ax.set_xlabel('', fontdict=config.axislabel_fontdict)
 
             # Format measure name with Greek letters
-            measure_formatted = measure.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
+            # measure_formatted = measure.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
 
             if outcome in ['log_value', 'delta_log_value']:
                 ax.set_ylabel(f'ln(1+[{measure_formatted}])', fontdict=config.axislabel_fontdict)
@@ -917,8 +908,8 @@ class Plots():
 
             # Replace Greek letter names in y-axis labels
             yticklabels = [label.get_text() for label in ax.get_yticklabels()]
-            yticklabels_formatted = [label.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
-                                     for label in yticklabels]
+            # yticklabels_formatted = [label.replace('TNF-alpha', 'TNF-α').replace('IFN-gamma', 'IFN-γ')
+            #                          for label in yticklabels]
             ax.set_yticklabels(yticklabels_formatted, rotation=0)
 
             ax.tick_params(axis='x', pad=2)  # Bring x-axis labels closer to plot
@@ -1003,7 +994,9 @@ class Models():
 
         ### Adjust for multiple comparisons 
         df_res = Helpers.apply_aoife_correction(df_res, col_p='p_ttest')
+        df_res[f'p_ttest_adj_sig'] = df_res[f'p_ttest_adj'].apply(commons.Helpers.sig_marking)
         df_res = Helpers.apply_aoife_correction(df_res, col_p='p_wilcoxon')
+        df_res[f'p_wilcoxon_adj_sig'] = df_res[f'p_wilcoxon_adj'].apply(commons.Helpers.sig_marking)
 
         ### Round numerics
         df_res['t'] = round(df_res['t'], 3)
@@ -1028,13 +1021,10 @@ class Models():
         df_res = df_res.sort_values(by=['measure', 'tp']).reset_index(drop=True)
 
         if save!={}:
-            # Format measure names with Greek letters for output
-            df_res['measure'] = df_res['measure'].str.replace('TNF-alpha', 'TNF-α').str.replace('IFN-gamma', 'IFN-γ')
-
             df_tmp = df_res.loc[df_res.measure.isin(config.markers_inflamation )]
             df_tmp.to_csv(os.path.join(save['dir_out'], f'{save['fname_prefix']}_inflamation.csv'), index=False)
 
-            df_tmp = df_res.loc[df_res.measure.isin(config.markers_mitokines)]
+            df_tmp = df_res.loc[df_res.measure.isin(config.markers_mitokines + ['mitoindex'])]
             df_tmp.to_csv(os.path.join(save['dir_out'], f'{save['fname_prefix']}_mitokines.csv'), index=False)
 
             df_tmp = df_res.loc[df_res.measure.isin(config.markers_explorat)]
@@ -1043,7 +1033,7 @@ class Models():
         return df_res
 
     @staticmethod
-    def fit_withinarm_septps(df_master, outcome='log_value', df_res=pd.DataFrame(), **save):
+    def fit_withinarm_septps(df_master, outcome='log_value', df_res=pd.DataFrame(), fdr_adj='Aoife', **save):
         """Fit within-arm mixed models separately for each timepoint vs baseline.
 
         Uses a random-intercept mixed linear model with `tp` as a fixed effect
@@ -1099,11 +1089,15 @@ class Models():
         df_res['ci_low'], df_res['ci_high'] = -df_res['ci_high'], -df_res['ci_low']
 
         ### Adjust for multiple comparisons using FDR; use one or the other version below
-        # This is the normal, adjust for all comparisons version
-        # rejected, df_res[f'p_adj'] = fdrcorrection(df_res['p']) 
-        # This is according to Aoife's groupings 
-        df_res = Helpers.apply_aoife_correction(df_res)
-                
+        assert fdr_adj in ['Aoife', 'traditional']        
+        if fdr_adj == 'Aoife':
+            # This is FDR adjutment according to Aoife's groupings 
+            df_res = Helpers.apply_aoife_correction(df_res)
+        elif fdr_adj == 'traditional':
+            # This is the traditional, adjust for all-at-once FDR
+            rejected, df_res[f'p_adj'] = fdrcorrection(df_res['p']) 
+        
+        df_res[f'p_adj_sig'] = df_res[f'p_adj'].apply(commons.Helpers.sig_marking)
         df_res['p'] = round(df_res['p'], 3)
         df_res['p_adj'] = round(df_res['p_adj'], 3)
         df_res['p_sig'] = df_res['p'].apply(commons.Helpers.sig_marking)
@@ -1123,12 +1117,10 @@ class Models():
 
         if save!={}:
             # Format measure names with Greek letters for output
-            df_res['measure'] = df_res['measure'].str.replace('TNF-alpha', 'TNF-α').str.replace('IFN-gamma', 'IFN-γ')
-
-            df_tmp = df_res.loc[df_res.measure.isin(config.markers_inflamation )]
+            df_tmp = df_res.loc[df_res.measure.isin(config.markers_inflamation)]
             df_tmp.to_csv(os.path.join(save['dir_out'], f'{save['fname_prefix']}_inflamation.csv'), index=False)
 
-            df_tmp = df_res.loc[df_res.measure.isin(config.markers_mitokines)]
+            df_tmp = df_res.loc[df_res.measure.isin(config.markers_mitokines + ['mitoindex'])]
             df_tmp.to_csv(os.path.join(save['dir_out'], f'{save['fname_prefix']}_mitokines.csv'), index=False)
 
             df_tmp = df_res.loc[df_res.measure.isin(config.markers_explorat)]
@@ -1161,13 +1153,12 @@ class Helpers():
         rejected, df.loc[(df.measure.isin(inf_markers)), f'{col_p}_adj'] = fdrcorrection(df[df.measure.isin(inf_markers)][col_p])
 
         ### Adjust mitokines
-        rejected, df.loc[(df.measure.isin(config.markers_mitokines)), f'{col_p}_adj'] = fdrcorrection(df[df.measure.isin(config.markers_mitokines)][col_p])
+        rejected, df.loc[(df.measure.isin(config.markers_mitokines + ['mitoindex'])), f'{col_p}_adj'] = fdrcorrection(df[df.measure.isin(config.markers_mitokines + ['mitoindex'])][col_p])
 
         ### Adjust exploratory markers
         rejected, df.loc[(df.measure.isin(config.markers_explorat)), f'{col_p}_adj'] = fdrcorrection(df[df.measure.isin(config.markers_explorat)][col_p])
 
         ### Apply sig markings
-        df[f'{col_p}_adj_sig'] = df[f'{col_p}_adj'].apply(commons.Helpers.sig_marking)
         return df
 
     @staticmethod
