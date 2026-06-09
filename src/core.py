@@ -218,7 +218,7 @@ class DataWrangl():
                 print(f"  pID {int(row['pID'])}, tp {row['tp']}: missing {missing}")
 
         # GDF-15 lower is better, so change score signs will be flipped, so higher is better.
-        if 'GDF-15' in comps:
+        if ('GDF-15' in comps) and config.flip_GDF15:
             df_infind['GDF-15'] = -df_infind['GDF-15']
 
         # Step 2: Calculate inflammation index as the mean of the z-scored markers

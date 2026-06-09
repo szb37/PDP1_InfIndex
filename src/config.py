@@ -18,6 +18,7 @@ err_kws={'capsize': 4, 'elinewidth': 0.75,'capthick': 0.75}
 ### Miscs
 tps = ['bsl','A1', 'B1', 'B30']
 parkers_csvs = ['infindex_exploratory.csv', 'infindex_inflammatory.csv', 'infindex_mitokines.csv']
+flip_GDF15 = False # Flip the sign of GDF15 when constructing the mitoindex
 
 # timepoint to number of days conversion
 tp_to_ndays={ # Based form the PDP1 paper, average number of days between tps
